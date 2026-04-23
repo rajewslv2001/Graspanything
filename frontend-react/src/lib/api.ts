@@ -1,5 +1,8 @@
 const TOKEN_KEY = "voicetutor_jwt";
 
+// In production, set VITE_API_URL to your backend URL (e.g. https://grasp-api.up.railway.app)
+const API_BASE = import.meta.env.VITE_API_URL ?? "";
+
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
 export const setToken = (t: string) => localStorage.setItem(TOKEN_KEY, t);
 export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
@@ -12,7 +15,7 @@ async function request(path: string, options: RequestInit = {}) {
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(path, { ...options, headers });
+  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
 
   if (res.status === 401) {
     clearToken();
@@ -44,7 +47,7 @@ async function parseError(res: Response, fallback: string): Promise<string> {
 }
 
 export async function login(email: string, password: string) {
-  const res = await fetch("/api/auth/login", {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -55,7 +58,7 @@ export async function login(email: string, password: string) {
 }
 
 export async function register(email: string, password: string) {
-  const res = await fetch("/api/auth/register", {
+  const res = await fetch(`${API_BASE}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
