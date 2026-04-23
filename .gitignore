@@ -1,0 +1,28 @@
+# Secrets
+.env
+credentials.json
+token.json
+
+# Data (regenerated at runtime)
+.tmp/
+chromadb_data/
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+frontend-react/node_modules/
+frontend-react/dist/
+frontend-react/.env.local
+
+# Old frontend (not deployed)
+frontend/
+
+# macOS
+.DS_Store

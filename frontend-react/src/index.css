@@ -1,0 +1,172 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500;1,600;1,700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 40 33% 94%;
+    --foreground: 0 0% 5%;
+
+    --card: 0 0% 7%;
+    --card-foreground: 40 33% 94%;
+
+    --popover: 40 33% 94%;
+    --popover-foreground: 0 0% 5%;
+
+    --primary: 0 0% 5%;
+    --primary-foreground: 40 33% 94%;
+
+    --secondary: 40 33% 94%;
+    --secondary-foreground: 0 0% 5%;
+
+    --muted: 40 10% 80%;
+    --muted-foreground: 0 0% 35%;
+
+    --accent: 100 53% 20%;
+    --accent-foreground: 40 33% 94%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 0 0% 5%;
+    --input: 0 0% 5%;
+    --ring: 0 0% 5%;
+
+    --radius: 0px;
+
+    --pink: 352 55% 77%;
+    --pink-foreground: 0 0% 5%;
+
+    --dark-surface: 0 0% 5%;
+    --dark-surface-foreground: 40 33% 94%;
+    --dark-card: 0 0% 7%;
+    --dark-card-border: 0 0% 20%;
+
+    --bonsai-blossom: 349 82% 74%;
+    --bonsai-blossom-light: 343 100% 86%;
+    --bonsai-blossom-shadow: 347 63% 64%;
+    --bonsai-bark: 18 31% 24%;
+    --bonsai-bark-dark: 14 34% 16%;
+    --bonsai-bark-light: 20 33% 31%;
+    --bonsai-pot: 212 46% 43%;
+    --bonsai-pot-dark: 213 53% 28%;
+    --bonsai-pot-light: 206 49% 63%;
+    --bonsai-sand: 35 47% 84%;
+    --bonsai-sand-shadow: 34 29% 72%;
+
+    --font-pixel: 'Press Start 2P', monospace;
+    --font-body: 'Lora', serif;
+
+    --shadow-pixel: 4px 4px 0px hsl(0 0% 5%);
+    --shadow-pixel-sm: 2px 2px 0px hsl(0 0% 5%);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    border-radius: 0 !important;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-body);
+  }
+
+  /* Dot grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: radial-gradient(circle, hsl(0 0% 5% / 0.07) 1px, transparent 1px);
+    background-size: 24px 24px;
+    pointer-events: none;
+    z-index: 0;
+  }
+}
+
+/* Typing animation */
+@keyframes typing {
+  from { width: 0; }
+  to { width: 100%; }
+}
+
+@keyframes blink-cursor {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(30px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes bounce-down {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(8px); }
+}
+
+.typing-container {
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  border-right: 3px solid hsl(var(--foreground));
+  animation: typing 2s steps(16, end) 0.3s both, blink-cursor 0.8s step-end 0.3s infinite;
+}
+
+.typing-container.done {
+  animation: typing 2s steps(16, end) 0.3s both, blink-cursor 0.8s step-end 0.3s 5;
+  border-right-color: transparent;
+}
+
+.fade-up-delay-1 {
+  opacity: 0;
+  animation: fade-up 0.6s ease-out 2.6s forwards;
+}
+
+.fade-up-delay-2 {
+  opacity: 0;
+  animation: slide-up 0.6s ease-out 3s forwards;
+}
+
+.pixel-btn {
+  box-shadow: var(--shadow-pixel);
+  transition: transform 0.1s, box-shadow 0.1s;
+  border: 2px solid hsl(var(--foreground));
+}
+
+.pixel-btn:hover {
+  transform: translate(4px, 4px);
+  box-shadow: none;
+}
+
+.pixel-tag {
+  box-shadow: var(--shadow-pixel-sm);
+  border: 2px solid hsl(var(--foreground));
+  transition: transform 0.1s, box-shadow 0.1s, background-color 0.15s, color 0.15s;
+}
+
+.pixel-tag:hover {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+  background-color: hsl(var(--foreground));
+  color: hsl(var(--background));
+}
+
+.scroll-fade-in {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.7s ease-out, transform 0.7s ease-out;
+}
+
+.scroll-fade-in.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
