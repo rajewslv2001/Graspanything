@@ -37,7 +37,7 @@ const HeroSection = () => {
       </div>
 
       <p className="font-pixel text-[10px] tracking-[0.3em] text-accent mb-8 fade-up-delay-1" style={{ animationDelay: '0.1s', opacity: 0, animation: 'fade-up 0.4s ease-out 0.1s forwards' }}>
-        Stop READING and start UNDERSTANDING
+        Stop READING And Start UNDERSTANDING
       </p>
 
       <h1 className="font-pixel text-2xl md:text-4xl lg:text-5xl text-foreground mb-8">
