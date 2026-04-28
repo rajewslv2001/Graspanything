@@ -17,7 +17,7 @@ venv/
 *.egg-info/
 
 # Node
-frontend-react/node_modules/
+node_modules/
 frontend-react/dist/
 frontend-react/.env.local
 
