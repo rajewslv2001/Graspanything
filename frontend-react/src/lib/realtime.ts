@@ -34,7 +34,7 @@ export class RealtimeSession {
   private ws: WebSocket | null = null;
   private audioCtx: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
-  private scriptProcessor: ScriptProcessorNode | null = null;
+  private micWorklet: AudioWorkletNode | null = null;
   private audioQueue: ArrayBuffer[] = [];
   private isPlaying = false;
   private agentSpeaking = false;
@@ -142,9 +142,11 @@ export class RealtimeSession {
         }
         break;
 
-      case "error":
-        console.error("Realtime error:", msg.error);
+      case "error": {
+        const err = msg.error as { type?: string; code?: string; message?: string } | undefined;
+        console.error("Realtime error:", err?.type, err?.code, err?.message, msg.error);
         break;
+      }
     }
   }
 
@@ -184,28 +186,28 @@ export class RealtimeSession {
       });
       if (!this.audioCtx) this.audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
 
+      await this.audioCtx.audioWorklet.addModule("/mic-processor.js");
       const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
-      this.scriptProcessor = this.audioCtx.createScriptProcessor(4096, 1, 1);
-      source.connect(this.scriptProcessor);
-      this.scriptProcessor.connect(this.audioCtx.destination);
+      this.micWorklet = new AudioWorkletNode(this.audioCtx, "mic-processor");
 
-      this.scriptProcessor.onaudioprocess = (e) => {
+      this.micWorklet.port.onmessage = (e: MessageEvent<Float32Array>) => {
         if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         // Gate audio while agent is speaking to prevent echo triggering VAD
         if (this.agentSpeaking) return;
-        const float32 = e.inputBuffer.getChannelData(0);
-        const int16 = float32ToInt16(float32);
+        const int16 = float32ToInt16(e.data);
         const base64 = arrayBufferToBase64(int16.buffer);
         this.send({ type: "input_audio_buffer.append", audio: base64 });
       };
+
+      source.connect(this.micWorklet);
     } catch {
       this.emit({ type: "transcript", role: "tutor", text: "Microphone access denied. Please allow mic access and try again." });
     }
   }
 
   private stopMic() {
-    this.scriptProcessor?.disconnect();
-    this.scriptProcessor = null;
+    this.micWorklet?.disconnect();
+    this.micWorklet = null;
     this.mediaStream?.getTracks().forEach((t) => t.stop());
     this.mediaStream = null;
   }
