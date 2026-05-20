@@ -63,7 +63,7 @@ async def create_realtime_session(system_prompt: str) -> dict:
                 "Content-Type": "application/json",
             },
             json={
-                "model": "gpt-4o-realtime-preview",
+                "model": "gpt-4o-realtime-preview-2024-12-17",
                 "instructions": system_prompt,
                 "voice": "alloy",
                 "input_audio_format": "pcm16",
