@@ -53,6 +53,8 @@ async def start_session(
 
     session_id = session_data.get("id", "")
     ephemeral_token = session_data.get("client_secret", {}).get("value", "")
+    # Use the exact model name OpenAI assigned — the generic alias is rejected by the WebSocket endpoint
+    model = session_data.get("model", "gpt-4o-realtime-preview-2024-12-17")
 
     if not ephemeral_token:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to obtain ephemeral token")
@@ -70,7 +72,7 @@ async def start_session(
     return SessionStartResponse(
         ephemeral_token=ephemeral_token,
         session_id=session_id,
-        model="gpt-4o-realtime-preview",
+        model=model,
         student_name=student_name,
     )
 

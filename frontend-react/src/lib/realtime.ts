@@ -45,12 +45,12 @@ export class RealtimeSession {
     this.onEvent = onEvent;
   }
 
-  async connect(ephemeralToken: string) {
+  async connect(ephemeralToken: string, model: string) {
     this.disconnect();
     this.emit({ type: "status", status: "connecting" });
 
     this.ws = new WebSocket(
-      `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview`,
+      `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
       ["realtime", `openai-insecure-api-key.${ephemeralToken}`, "openai-beta.realtime-v1"]
     );
 
