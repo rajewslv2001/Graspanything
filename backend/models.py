@@ -28,9 +28,7 @@ class SessionStartRequest(BaseModel):
 
 
 class SessionStartResponse(BaseModel):
-    ephemeral_token: str
     session_id: str
-    model: str
     student_name: str
 
 

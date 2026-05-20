@@ -91,9 +91,7 @@ export async function uploadDoc(file: File): Promise<Doc> {
 
 // Session
 export interface SessionData {
-  ephemeral_token: string;
   session_id: string;
-  model: string;
   student_name: string;
 }
 

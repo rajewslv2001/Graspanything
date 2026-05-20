@@ -1,27 +1,10 @@
-const SAMPLE_RATE = 24000;
+import { getToken } from "./api";
 
-function float32ToInt16(float32: Float32Array): Int16Array {
-  const int16 = new Int16Array(float32.length);
-  for (let i = 0; i < float32.length; i++) {
-    int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32767)));
-  }
-  return int16;
-}
+const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  let binary = "";
-  const bytes = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-  return btoa(binary);
-}
-
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64);
-  const buffer = new ArrayBuffer(binary.length);
-  const view = new Uint8Array(buffer);
-  for (let i = 0; i < binary.length; i++) view[i] = binary.charCodeAt(i);
-  return buffer;
-}
+const SILENCE_THRESHOLD = 0.015;
+const SILENCE_DURATION_MS = 700;
+const MIN_SPEECH_MS = 300;
 
 export type RealtimeEvent =
   | { type: "status"; status: "connecting" | "idle" | "listening" | "speaking" | "disconnected" }
@@ -34,7 +17,13 @@ export class RealtimeSession {
   private ws: WebSocket | null = null;
   private audioCtx: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
-  private micWorklet: AudioWorkletNode | null = null;
+  private recorder: MediaRecorder | null = null;
+  private analyser: AnalyserNode | null = null;
+  private vadFrameId: number | null = null;
+  private silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  private isRecording = false;
+  private recordingStart = 0;
+  private audioChunks: Blob[] = [];
   private audioQueue: ArrayBuffer[] = [];
   private isPlaying = false;
   private agentSpeaking = false;
@@ -45,37 +34,46 @@ export class RealtimeSession {
     this.onEvent = onEvent;
   }
 
-  async connect(ephemeralToken: string, model: string) {
+  async connect(sessionId: string) {
     this.disconnect();
     this.emit({ type: "status", status: "connecting" });
 
+    const wsBase = (API_BASE || window.location.origin).replace(/^http/, "ws");
+    const token = getToken() ?? "";
+
     this.ws = new WebSocket(
-      `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`,
-      ["realtime", `openai-insecure-api-key.${ephemeralToken}`, "openai-beta.realtime-v1"]
+      `${wsBase}/api/session/ws/${sessionId}?token=${encodeURIComponent(token)}`
     );
+    this.ws.binaryType = "arraybuffer";
 
     this.ws.addEventListener("open", async () => {
       this.connected = true;
       this.emit({ type: "status", status: "idle" });
-      // Session is fully configured by the backend (voice, turn_detection, instructions, formats).
-      // No session.update needed — go straight to mic + greeting.
       await this.startMic();
-      this.send({ type: "response.create" });
     });
 
     this.ws.addEventListener("message", (e) => {
-      this.handleMessage(JSON.parse(e.data));
+      if (e.data instanceof ArrayBuffer) {
+        this.audioQueue.push(e.data);
+        if (!this.isPlaying) this.playNextChunk();
+      } else {
+        try {
+          this.handleMessage(JSON.parse(e.data as string));
+        } catch {
+          console.error("Failed to parse WS message:", e.data);
+        }
+      }
     });
 
     this.ws.addEventListener("close", (e) => {
-      console.warn("Realtime WS closed:", e.code, e.reason);
+      console.warn("Session WS closed:", e.code, e.reason);
       this.connected = false;
       this.emit({ type: "status", status: "disconnected" });
       this.stopMic();
     });
 
     this.ws.addEventListener("error", (e) => {
-      console.error("Realtime WS error:", e);
+      console.error("Session WS error:", e);
       this.connected = false;
       this.emit({ type: "status", status: "disconnected" });
     });
@@ -83,119 +81,174 @@ export class RealtimeSession {
 
   private handleMessage(msg: Record<string, unknown>) {
     switch (msg.type) {
-      case "input_audio_buffer.speech_started":
-        this.emit({ type: "speech_started" });
-        this.emit({ type: "status", status: "listening" });
+      case "transcript":
+        this.emit({
+          type: "transcript",
+          role: msg.role as "student" | "tutor",
+          text: msg.text as string,
+        });
         break;
-
-      case "input_audio_buffer.speech_stopped":
-        this.emit({ type: "status", status: "idle" });
-        break;
-
-      case "conversation.item.input_audio_transcription.completed": {
-        const text = (msg.transcript as string)?.trim();
-        if (text) this.emit({ type: "transcript", role: "student", text });
-        break;
-      }
-
-      case "response.created":
-        this.agentSpeaking = true;
-        // Clear any mic audio buffered during transition to prevent self-triggering
-        this.send({ type: "input_audio_buffer.clear" });
-        break;
-
-      case "response.audio_transcript.delta":
+      case "transcript_delta":
         if (msg.delta) this.emit({ type: "transcript_delta", delta: msg.delta as string });
         break;
-
-      case "response.audio_transcript.done":
+      case "transcript_done":
         this.emit({ type: "transcript_done" });
         break;
-
-      case "response.audio.delta":
-        if (msg.delta) {
-          this.agentSpeaking = true;
-          this.audioQueue.push(base64ToArrayBuffer(msg.delta as string));
-          this.emit({ type: "status", status: "speaking" });
-          this.playNextChunk();
-        }
+      case "error":
+        console.error("Session error:", msg.message);
         break;
-
-      case "response.done":
-        if (!this.isPlaying && this.audioQueue.length === 0) {
-          this.agentSpeaking = false;
-          this.emit({ type: "status", status: "idle" });
-        }
-        break;
-
-      case "error": {
-        const err = msg.error as { type?: string; code?: string; message?: string } | undefined;
-        console.error("Realtime error:", err?.type, err?.code, err?.message, msg.error);
-        break;
-      }
     }
   }
 
   private async playNextChunk() {
     if (this.isPlaying || this.audioQueue.length === 0) return;
     this.isPlaying = true;
+    this.agentSpeaking = true;
+    this.emit({ type: "status", status: "speaking" });
 
-    const pcmBuffer = this.audioQueue.shift()!;
-    if (!this.audioCtx) this.audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    const buf = this.audioQueue.shift()!;
+    if (!this.audioCtx) this.audioCtx = new AudioContext();
 
-    const int16 = new Int16Array(pcmBuffer);
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
-
-    const audioBuffer = this.audioCtx.createBuffer(1, float32.length, SAMPLE_RATE);
-    audioBuffer.copyToChannel(float32, 0);
-
-    const source = this.audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(this.audioCtx.destination);
-    source.onended = () => {
+    try {
+      await this.audioCtx.resume();
+      const decoded = await this.audioCtx.decodeAudioData(buf.slice(0));
+      const source = this.audioCtx.createBufferSource();
+      source.buffer = decoded;
+      source.connect(this.audioCtx.destination);
+      source.onended = () => {
+        this.isPlaying = false;
+        if (this.audioQueue.length > 0) {
+          this.playNextChunk();
+        } else {
+          this.agentSpeaking = false;
+          this.emit({ type: "status", status: "idle" });
+        }
+      };
+      source.start();
+    } catch (e) {
+      console.error("Audio playback error:", e);
       this.isPlaying = false;
-      if (this.audioQueue.length > 0) {
-        this.playNextChunk();
-      } else {
-        this.agentSpeaking = false;
-        this.emit({ type: "status", status: "idle" });
-      }
-    };
-    source.start();
+      this.agentSpeaking = false;
+      this.emit({ type: "status", status: "idle" });
+      if (this.audioQueue.length > 0) this.playNextChunk();
+    }
   }
 
   private async startMic() {
     try {
       this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { sampleRate: SAMPLE_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
       });
-      if (!this.audioCtx) this.audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
 
-      await this.audioCtx.audioWorklet.addModule("/mic-processor.js");
+      if (!this.audioCtx) this.audioCtx = new AudioContext();
+      await this.audioCtx.resume();
+
       const source = this.audioCtx.createMediaStreamSource(this.mediaStream);
-      this.micWorklet = new AudioWorkletNode(this.audioCtx, "mic-processor");
+      this.analyser = this.audioCtx.createAnalyser();
+      this.analyser.fftSize = 1024;
+      source.connect(this.analyser);
 
-      this.micWorklet.port.onmessage = (e: MessageEvent<Float32Array>) => {
-        if (!this.connected || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-        // Gate audio while agent is speaking to prevent echo triggering VAD
-        if (this.agentSpeaking) return;
-        const int16 = float32ToInt16(e.data);
-        const base64 = arrayBufferToBase64(int16.buffer);
-        this.send({ type: "input_audio_buffer.append", audio: base64 });
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "audio/mp4";
+
+      this.recorder = new MediaRecorder(this.mediaStream, { mimeType });
+      this.recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) this.audioChunks.push(e.data);
       };
+      this.recorder.onstop = () => this.onRecordingStop();
 
-      source.connect(this.micWorklet);
+      this.startVAD();
     } catch {
-      this.emit({ type: "transcript", role: "tutor", text: "Microphone access denied. Please allow mic access and try again." });
+      this.emit({
+        type: "transcript",
+        role: "tutor",
+        text: "Microphone access denied. Please allow mic access and try again.",
+      });
+    }
+  }
+
+  private startVAD() {
+    const tick = () => {
+      if (!this.analyser) return;
+
+      const buf = new Float32Array(this.analyser.fftSize);
+      this.analyser.getFloatTimeDomainData(buf);
+      const rms = Math.sqrt(buf.reduce((s, x) => s + x * x, 0) / buf.length);
+      const loud = rms > SILENCE_THRESHOLD;
+
+      if (loud && !this.agentSpeaking) {
+        if (!this.isRecording) {
+          this.isRecording = true;
+          this.recordingStart = Date.now();
+          this.audioChunks = [];
+          this.recorder?.start();
+          this.emit({ type: "speech_started" });
+          this.emit({ type: "status", status: "listening" });
+        }
+        if (this.silenceTimer) {
+          clearTimeout(this.silenceTimer);
+          this.silenceTimer = null;
+        }
+      } else if (this.isRecording && !loud) {
+        if (!this.silenceTimer) {
+          this.silenceTimer = setTimeout(() => {
+            if (this.isRecording && this.recorder?.state === "recording") {
+              this.isRecording = false;
+              this.recorder.stop();
+              this.silenceTimer = null;
+            }
+          }, SILENCE_DURATION_MS);
+        }
+      }
+
+      this.vadFrameId = requestAnimationFrame(tick);
+    };
+    this.vadFrameId = requestAnimationFrame(tick);
+  }
+
+  private async onRecordingStop() {
+    if (this.audioChunks.length === 0) return;
+
+    if (Date.now() - this.recordingStart < MIN_SPEECH_MS) {
+      this.audioChunks = [];
+      return;
+    }
+
+    this.emit({ type: "status", status: "idle" });
+
+    const mimeType = this.recorder?.mimeType ?? "audio/webm";
+    const blob = new Blob(this.audioChunks, { type: mimeType });
+    this.audioChunks = [];
+
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      const arrayBuffer = await blob.arrayBuffer();
+      this.ws.send(arrayBuffer);
     }
   }
 
   private stopMic() {
-    this.micWorklet?.disconnect();
-    this.micWorklet = null;
+    if (this.vadFrameId !== null) {
+      cancelAnimationFrame(this.vadFrameId);
+      this.vadFrameId = null;
+    }
+    if (this.silenceTimer) {
+      clearTimeout(this.silenceTimer);
+      this.silenceTimer = null;
+    }
+    if (this.recorder?.state === "recording") this.recorder.stop();
+    this.recorder = null;
+    this.analyser = null;
     this.mediaStream?.getTracks().forEach((t) => t.stop());
     this.mediaStream = null;
+    this.isRecording = false;
   }
 
   disconnect() {
@@ -210,12 +263,6 @@ export class RealtimeSession {
 
   get isConnected() {
     return this.connected;
-  }
-
-  private send(msg: unknown) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg));
-    }
   }
 
   private emit(e: RealtimeEvent) {

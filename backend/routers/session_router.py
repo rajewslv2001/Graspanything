@@ -1,23 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import json
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from openai import AsyncOpenAI
 
+from backend.auth import decode_access_token
 from backend.config import get_settings
 from backend.database import User, get_db
 from backend.middleware.auth_middleware import get_current_user
 from backend.models import SessionStartRequest, SessionStartResponse, NotesRequest, NotesResponse
 from backend.services.document_service import list_documents, retrieve_context
-from backend.services.session_service import build_system_prompt, create_realtime_session
+from backend.services.session_service import build_system_prompt, get_ai_response
+from backend.services.voice_service import transcribe_audio, text_to_speech
 
 router = APIRouter(prefix="/api/session", tags=["session"])
 
-# In-memory session state (session-scoped, no cross-session persistence)
 _sessions: dict[str, dict] = {}
 
 
 def _name_from_email(email: str) -> str:
-    """Extract a display name from an email address."""
     local = email.split("@")[0]
     parts = local.replace(".", " ").replace("_", " ").replace("-", " ").split()
     return " ".join(p.capitalize() for p in parts) if parts else "there"
@@ -29,52 +32,94 @@ async def start_session(
     user_id: int = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Fetch user email to derive display name
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     student_name = _name_from_email(user.email) if user else "there"
 
-    # Verify the doc belongs to this user
     docs = await list_documents(user_id)
     doc = next((d for d in docs if d["doc_id"] == body.doc_id), None)
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
-    # Retrieve relevant chunks
     chunks = await retrieve_context(user_id, body.query, n=8)
     if not chunks:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No content found in document")
 
-    # Build Socratic system prompt
     system_prompt = build_system_prompt(chunks, doc["filename"], student_name)
+    session_id = str(uuid.uuid4())
 
-    # Create OpenAI Realtime session (returns ephemeral token)
-    session_data = await create_realtime_session(system_prompt)
-
-    session_id = session_data.get("id", "")
-    ephemeral_token = session_data.get("client_secret", {}).get("value", "")
-    # Use the exact model name OpenAI assigned — the generic alias is rejected by the WebSocket endpoint
-    model = session_data.get("model", "gpt-4o-realtime-preview-2024-12-17")
-
-    if not ephemeral_token:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to obtain ephemeral token")
-
-    # Store session state
     _sessions[session_id] = {
         "user_id": user_id,
         "doc_id": body.doc_id,
         "filename": doc["filename"],
-        "phase": "intro",
-        "current_topic": None,
-        "chunks_used": chunks,
+        "system_prompt": system_prompt,
+        "messages": [],
     }
 
-    return SessionStartResponse(
-        ephemeral_token=ephemeral_token,
-        session_id=session_id,
-        model=model,
-        student_name=student_name,
-    )
+    return SessionStartResponse(session_id=session_id, student_name=student_name)
+
+
+@router.websocket("/ws/{session_id}")
+async def session_websocket(
+    websocket: WebSocket,
+    session_id: str,
+    token: str = Query(default=""),
+):
+    user_id = decode_access_token(token)
+    if user_id is None:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
+    session = _sessions.get(session_id)
+    if not session or session["user_id"] != user_id:
+        await websocket.close(code=4004, reason="Session not found")
+        return
+
+    await websocket.accept()
+
+    async def send_json(data: dict) -> None:
+        await websocket.send_text(json.dumps(data))
+
+    # Generate and send opening greeting
+    try:
+        greeting = await get_ai_response(session, initial=True)
+        session["messages"].append({"role": "assistant", "content": greeting})
+        await send_json({"type": "transcript_delta", "delta": greeting})
+        await send_json({"type": "transcript_done"})
+        audio = await text_to_speech(greeting)
+        await websocket.send_bytes(audio)
+    except Exception as e:
+        await send_json({"type": "error", "message": f"Failed to start session: {e}"})
+
+    # Main conversation loop
+    while True:
+        try:
+            data = await websocket.receive()
+        except WebSocketDisconnect:
+            break
+
+        if "bytes" not in data:
+            continue
+
+        try:
+            transcript = await transcribe_audio(data["bytes"])
+            if not transcript:
+                continue
+
+            await send_json({"type": "transcript", "role": "student", "text": transcript})
+            session["messages"].append({"role": "user", "content": transcript})
+
+            response_text = await get_ai_response(session)
+            session["messages"].append({"role": "assistant", "content": response_text})
+
+            await send_json({"type": "transcript_delta", "delta": response_text})
+            await send_json({"type": "transcript_done"})
+
+            audio = await text_to_speech(response_text)
+            await websocket.send_bytes(audio)
+
+        except Exception as e:
+            await send_json({"type": "error", "message": f"Processing error: {e}"})
 
 
 _NOTES_SYSTEM_PROMPT = """You are a study-notes writer. Given a Socratic tutoring conversation transcript, produce clean, well-structured study notes the student can refer back to.
@@ -116,7 +161,6 @@ async def generate_notes(
         for m in body.messages
     ]
     transcript = "\n".join(transcript_lines)
-
     user_prompt = f"Document: {body.doc_filename}\n\nTranscript:\n{transcript}"
 
     response = await client.chat.completions.create(

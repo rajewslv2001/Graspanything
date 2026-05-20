@@ -135,7 +135,7 @@ export default function AppPage() {
       setMessages([]);
       const session = new RealtimeSession(handleEvent);
       sessionRef.current = session;
-      await session.connect(data.ephemeral_token, data.model);
+      await session.connect(data.session_id);
       setSessionActive(true);
     } catch (err) {
       setStatus("disconnected");

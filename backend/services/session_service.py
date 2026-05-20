@@ -1,4 +1,4 @@
-import httpx
+from openai import AsyncOpenAI
 
 from backend.config import get_settings
 
@@ -54,28 +54,19 @@ def build_system_prompt(chunks: list[str], filename: str, student_name: str = "t
     )
 
 
-async def create_realtime_session(system_prompt: str) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
-            "https://api.openai.com/v1/realtime/sessions",
-            headers={
-                "Authorization": f"Bearer {settings.openai_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "gpt-4o-realtime-preview-2024-12-17",
-                "instructions": system_prompt,
-                "voice": "alloy",
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "input_audio_transcription": {"model": "whisper-1"},
-                "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,
-                    "prefix_padding_ms": 300,
-                    "silence_duration_ms": 600,
-                },
-            },
-        )
-        response.raise_for_status()
-        return response.json()
+async def get_ai_response(session: dict, initial: bool = False) -> str:
+    client = AsyncOpenAI(api_key=settings.openai_api_key)
+
+    messages = [{"role": "system", "content": session["system_prompt"]}]
+    messages.extend(session["messages"])
+
+    if initial:
+        messages.append({"role": "user", "content": "[Begin the tutoring session now.]"})
+
+    response = await client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
+        temperature=0.7,
+        max_tokens=200,
+    )
+    return (response.choices[0].message.content or "").strip()
