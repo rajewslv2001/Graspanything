@@ -57,24 +57,8 @@ export class RealtimeSession {
     this.ws.addEventListener("open", async () => {
       this.connected = true;
       this.emit({ type: "status", status: "idle" });
-
-      // Server VAD handles turn detection; mic is gated while agent is speaking to prevent echo
-      this.send({
-        type: "session.update",
-        session: {
-          modalities: ["text", "audio"],
-          input_audio_format: "pcm16",
-          output_audio_format: "pcm16",
-          input_audio_transcription: { model: "whisper-1" },
-          turn_detection: {
-            type: "server_vad",
-            threshold: 0.5,
-            prefix_padding_ms: 300,
-            silence_duration_ms: 600,
-          },
-        },
-      });
-
+      // Session is fully configured by the backend (voice, turn_detection, instructions, formats).
+      // No session.update needed — go straight to mic + greeting.
       await this.startMic();
       this.send({ type: "response.create" });
     });
@@ -83,13 +67,15 @@ export class RealtimeSession {
       this.handleMessage(JSON.parse(e.data));
     });
 
-    this.ws.addEventListener("close", () => {
+    this.ws.addEventListener("close", (e) => {
+      console.warn("Realtime WS closed:", e.code, e.reason);
       this.connected = false;
       this.emit({ type: "status", status: "disconnected" });
       this.stopMic();
     });
 
-    this.ws.addEventListener("error", () => {
+    this.ws.addEventListener("error", (e) => {
+      console.error("Realtime WS error:", e);
       this.connected = false;
       this.emit({ type: "status", status: "disconnected" });
     });
