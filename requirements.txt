@@ -17,6 +17,7 @@ opentelemetry-exporter-otlp-proto-grpc
 pypdf==4.2.0
 tiktoken==0.7.0
 python-dotenv==1.0.1
+anthropic>=0.30.0
 httpx==0.27.0
 sniffio
 anyio

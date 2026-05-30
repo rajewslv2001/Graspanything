@@ -3,15 +3,23 @@ import { getToken } from "./api";
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
 
 const SILENCE_THRESHOLD = 0.015;
-const SILENCE_DURATION_MS = 700;
-const MIN_SPEECH_MS = 300;
+const SILENCE_DURATION_MS = 1500;
+const MIN_SPEECH_MS = 400;
 
 export type RealtimeEvent =
   | { type: "status"; status: "connecting" | "idle" | "listening" | "speaking" | "disconnected" }
   | { type: "speech_started" }
   | { type: "transcript"; role: "student" | "tutor"; text: string }
   | { type: "transcript_delta"; delta: string }
-  | { type: "transcript_done" };
+  | { type: "transcript_done" }
+  | { type: "error"; message: string }
+  | {
+    type: "mastery_achieved";
+    topic: string;
+    gaps: string[];
+    strengths: string[];
+    hasScript: boolean;
+  };
 
 export class RealtimeSession {
   private ws: WebSocket | null = null;
@@ -27,6 +35,8 @@ export class RealtimeSession {
   private audioQueue: ArrayBuffer[] = [];
   private isPlaying = false;
   private agentSpeaking = false;
+  private waitingForResponse = false;
+  private currentSource: AudioBufferSourceNode | null = null;
   private connected = false;
   private onEvent: (e: RealtimeEvent) => void;
 
@@ -68,6 +78,10 @@ export class RealtimeSession {
     this.ws.addEventListener("close", (e) => {
       console.warn("Session WS closed:", e.code, e.reason);
       this.connected = false;
+      if (e.code !== 1000 && e.code !== 1001) {
+        const reason = e.reason || `Connection closed (code ${e.code})`;
+        this.emit({ type: "error", message: reason });
+      }
       this.emit({ type: "status", status: "disconnected" });
       this.stopMic();
     });
@@ -94,8 +108,18 @@ export class RealtimeSession {
       case "transcript_done":
         this.emit({ type: "transcript_done" });
         break;
+      case "mastery_achieved":
+        this.emit({
+          type: "mastery_achieved",
+          topic: msg.topic as string,
+          gaps: (msg.gaps as string[]) ?? [],
+          strengths: (msg.strengths as string[]) ?? [],
+          hasScript: (msg.hasScript as boolean) ?? false,
+        });
+        break;
       case "error":
-        console.error("Session error:", msg.message);
+        this.waitingForResponse = false;
+        this.emit({ type: "error", message: msg.message as string });
         break;
     }
   }
@@ -106,6 +130,7 @@ export class RealtimeSession {
     this.agentSpeaking = true;
     this.emit({ type: "status", status: "speaking" });
 
+    this.waitingForResponse = false;
     const buf = this.audioQueue.shift()!;
     if (!this.audioCtx) this.audioCtx = new AudioContext();
 
@@ -113,9 +138,11 @@ export class RealtimeSession {
       await this.audioCtx.resume();
       const decoded = await this.audioCtx.decodeAudioData(buf.slice(0));
       const source = this.audioCtx.createBufferSource();
+      this.currentSource = source;
       source.buffer = decoded;
       source.connect(this.audioCtx.destination);
       source.onended = () => {
+        this.currentSource = null;
         this.isPlaying = false;
         if (this.audioQueue.length > 0) {
           this.playNextChunk();
@@ -184,7 +211,7 @@ export class RealtimeSession {
       const rms = Math.sqrt(buf.reduce((s, x) => s + x * x, 0) / buf.length);
       const loud = rms > SILENCE_THRESHOLD;
 
-      if (loud && !this.agentSpeaking) {
+      if (loud && !this.agentSpeaking && !this.waitingForResponse) {
         if (!this.isRecording) {
           this.isRecording = true;
           this.recordingStart = Date.now();
@@ -231,6 +258,7 @@ export class RealtimeSession {
     if (this.ws?.readyState === WebSocket.OPEN) {
       const arrayBuffer = await blob.arrayBuffer();
       this.ws.send(arrayBuffer);
+      this.waitingForResponse = true;
     }
   }
 
@@ -251,14 +279,27 @@ export class RealtimeSession {
     this.isRecording = false;
   }
 
+  pause() {
+    this.stopMic();
+    this.audioQueue = [];
+    try { this.currentSource?.stop(); } catch { /* already ended */ }
+    this.currentSource = null;
+    this.isPlaying = false;
+    this.agentSpeaking = false;
+    this.waitingForResponse = false;
+  }
+
   disconnect() {
     this.stopMic();
+    this.audioQueue = [];
+    try { this.currentSource?.stop(); } catch { /* already ended */ }
+    this.currentSource = null;
+    this.isPlaying = false;
+    this.agentSpeaking = false;
+    this.waitingForResponse = false;
     this.ws?.close();
     this.ws = null;
     this.connected = false;
-    this.agentSpeaking = false;
-    this.audioQueue = [];
-    this.isPlaying = false;
   }
 
   get isConnected() {

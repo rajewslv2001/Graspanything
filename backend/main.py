@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_settings
 from backend.database import init_db
-from backend.routers import health_router, auth_router, documents_router, session_router
+from backend.routers import health_router, auth_router, documents_router, session_router, whiteboard_router
 
 
 @asynccontextmanager
@@ -32,6 +32,7 @@ app.include_router(health_router.router)
 app.include_router(auth_router.router)
 app.include_router(documents_router.router)
 app.include_router(session_router.router)
+app.include_router(whiteboard_router.router)
 
 frontend_path = Path(settings.frontend_dir)
 if frontend_path.exists():

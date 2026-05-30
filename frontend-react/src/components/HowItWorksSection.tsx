@@ -1,8 +1,8 @@
 const steps = [
   {
     num: "①",
-    title: "Ask or upload",
-    desc: "Ask Grasp anything out loud, or drop in your notes, slides, or PDFs.",
+    title: "Ask anything",
+    desc: "Ask Grasp a question out loud or type what you want to learn. No topic is off limits.",
   },
   {
     num: "②",
@@ -13,6 +13,11 @@ const steps = [
     num: "③",
     title: "Prove you got it",
     desc: "Grasp asks you questions. Answer them. Only when you're ready does it move on.",
+  },
+  {
+    num: "④",
+    title: "Get your Recap",
+    desc: "Once mastery is achieved, Grasp generates a visual whiteboard summary of everything you learned.",
   },
 ];
 
@@ -27,7 +32,7 @@ const HowItWorksSection = () => {
           Learning that checks itself.
         </h2>
 
-        <div className="grid md:grid-cols-3 gap-6">
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
           {steps.map((step, i) => (
             <div
               key={i}

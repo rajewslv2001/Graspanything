@@ -4,6 +4,7 @@ import HeroSection from "@/components/HeroSection";
 import HowItWorksSection from "@/components/HowItWorksSection";
 import TopicsSection from "@/components/TopicsSection";
 import TryItSection from "@/components/TryItSection";
+import RecapSection from "@/components/RecapSection";
 import QuoteStrip from "@/components/QuoteStrip";
 import Footer from "@/components/Footer";
 
@@ -32,6 +33,7 @@ const Index = () => {
       <StickyNav />
       <HeroSection />
       <HowItWorksSection />
+      <RecapSection />
       <TopicsSection />
       <TryItSection />
       <QuoteStrip />

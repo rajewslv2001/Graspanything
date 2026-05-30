@@ -5,6 +5,8 @@ import { RealtimeSession, RealtimeEvent } from "@/lib/realtime";
 import GraspLogo from "@/components/GraspLogo";
 import BonsaiSvg from "@/components/BonsaiSvg";
 import NotesModal from "@/components/NotesModal";
+import WhiteboardOverlay from "@/components/whiteboard/WhiteboardOverlay";
+import type { Script } from "@/lib/whiteboard/dsl";
 
 type Status = "connecting" | "idle" | "listening" | "speaking" | "disconnected";
 
@@ -13,6 +15,7 @@ interface Message {
   text: string;
   streaming?: boolean;
   pending?: boolean;
+  cta?: "whiteboard";
 }
 
 const STATUS_LABELS: Record<Status, string> = {
@@ -44,9 +47,17 @@ export default function AppPage() {
   const [studentName, setStudentName] = useState("");
   const [notesMarkdown, setNotesMarkdown] = useState<string | null>(null);
   const [notesLoading, setNotesLoading] = useState(false);
+  const [masteryAchieved, setMasteryAchieved] = useState(false);
+  const [masteryTopic, setMasteryTopic] = useState("");
+  const [masteryGaps, setMasteryGaps] = useState<string[]>([]);
+  const [masteryStrengths, setMasteryStrengths] = useState<string[]>([]);
+  const [showWhiteboard, setShowWhiteboard] = useState(false);
+  const [recapScript, setRecapScript] = useState<unknown>(null);
+  const [recapLoading, setRecapLoading] = useState(false);
   const sessionRef = useRef<RealtimeSession | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sessionIdRef = useRef<string>("");
 
   useEffect(() => {
     if (!getToken()) { navigate("/auth"); return; }
@@ -98,6 +109,15 @@ export default function AppPage() {
           return prev;
         });
         break;
+      case "error":
+        setSessionError(e.message);
+        break;
+      case "mastery_achieved":
+        setMasteryAchieved(true);
+        setMasteryTopic(e.topic);
+        setMasteryGaps(e.gaps);
+        setMasteryStrengths(e.strengths);
+        break;
     }
   }
 
@@ -132,6 +152,7 @@ export default function AppPage() {
     try {
       const data = await startSession(selectedDoc.doc_id);
       setStudentName(data.student_name);
+      sessionIdRef.current = data.session_id;
       setMessages([]);
       const session = new RealtimeSession(handleEvent);
       sessionRef.current = session;
@@ -169,6 +190,34 @@ export default function AppPage() {
       console.error("Notes generation failed:", err);
     } finally {
       setNotesLoading(false);
+    }
+  }
+
+  async function handleOpenWhiteboard() {
+    setRecapLoading(true);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const apiBase = import.meta.env.VITE_API_URL ?? "";
+      const token = getToken();
+      const res = await fetch(
+        `${apiBase}/api/session/recap/${sessionIdRef.current}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
+        }
+      );
+      if (!res.ok) throw new Error("Failed to fetch recap");
+      const data = await res.json();
+      sessionRef.current?.pause();
+      setRecapScript(data.script);
+      setShowWhiteboard(true);
+    } catch (err) {
+      console.error("Failed to load recap:", err);
+      setSessionError("Recap took too long to prepare. Try opening it again.");
+    } finally {
+      clearTimeout(timeout);
+      setRecapLoading(false);
     }
   }
 
@@ -349,6 +398,22 @@ export default function AppPage() {
                 </div>
               </div>
             ))}
+            {masteryAchieved && (
+              <div className="flex justify-start">
+                <button
+                  onClick={handleOpenWhiteboard}
+                  disabled={recapLoading}
+                  className="max-w-[75%] w-full text-left px-4 py-3 border-2 border-accent bg-accent/10 font-body text-sm leading-relaxed shadow-[2px_2px_0px_hsl(var(--accent))] hover:shadow-[4px_4px_0px_hsl(var(--accent))] hover:translate-x-[-2px] hover:translate-y-[-2px] transition-all disabled:opacity-50 cursor-pointer animate-pulse"
+                >
+                  <div className="font-pixel text-[10px] text-accent mb-2 tracking-wider">
+                    ✦ RECAP READY
+                  </div>
+                  <div className="text-foreground">
+                    {recapLoading ? "Loading your recap…" : "Tap to open your visual recap."}
+                  </div>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Mic status */}
@@ -378,6 +443,13 @@ export default function AppPage() {
         markdown={notesMarkdown}
         docFilename={selectedDoc?.filename ?? ""}
         onClose={() => setNotesMarkdown(null)}
+      />
+    )}
+    {showWhiteboard && recapScript && (
+      <WhiteboardOverlay
+        script={recapScript as Script}
+        topic={masteryTopic}
+        onClose={() => setShowWhiteboard(false)}
       />
     )}
     </>

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 
@@ -13,11 +14,72 @@ from backend.middleware.auth_middleware import get_current_user
 from backend.models import SessionStartRequest, SessionStartResponse, NotesRequest, NotesResponse
 from backend.services.document_service import list_documents, retrieve_context
 from backend.services.session_service import build_system_prompt, get_ai_response
+from backend.services.mastery_service import evaluate_mastery, prepare_recap_script
 from backend.services.voice_service import transcribe_audio, text_to_speech
 
 router = APIRouter(prefix="/api/session", tags=["session"])
 
 _sessions: dict[str, dict] = {}
+
+
+async def _check_mastery(websocket, session: dict, send_json) -> None:
+    """Background task: evaluate mastery and trigger recap prep when approaching."""
+    try:
+        result = await evaluate_mastery(session["messages"])
+        if not result:
+            return
+
+        session["mastery"] = result
+
+        # Start prep as soon as approaching (score 6+), if not already started
+        if result.get("approaching") and not session.get("recap_prep_started"):
+            session["recap_prep_started"] = True
+            asyncio.create_task(_prepare_and_signal(websocket, session, send_json))
+
+    except Exception as e:
+        print(f"[_check_mastery] error: {e}")
+
+
+async def _prepare_and_signal(websocket, session: dict, send_json) -> None:
+    """Prepare the recap, then trigger final check questions before announcing."""
+    try:
+        await prepare_recap_script(session)
+        session["recap_prep_complete"] = True
+
+        if session.get("mastery_signaled"):
+            return
+
+        # Don't announce yet — trigger final check questions first
+        session["final_check_pending"] = True
+        session["final_check_count"] = 0  # tracks how many check exchanges have happened
+        print(f"[recap] prep complete, final check questions queued")
+
+    except Exception as e:
+        print(f"[_prepare_and_signal] error: {e}")
+
+
+async def _mastery_announcement(topic: str) -> str:
+    try:
+        client = AsyncOpenAI(api_key=get_settings().openai_api_key)
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a warm Socratic tutor. The student just demonstrated real mastery. "
+                        "Write ONE spoken sentence (15-25 words) congratulating them and letting them know "
+                        "their visual recap is ready. Casual, warm, no markdown, no emojis."
+                    ),
+                },
+                {"role": "user", "content": f"Topic: {topic}"},
+            ],
+            max_tokens=60,
+            temperature=0.7,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        return f"You've really got {topic} down — your visual recap is ready whenever you want it."
 
 
 def _name_from_email(email: str) -> str:
@@ -65,6 +127,8 @@ async def session_websocket(
     session_id: str,
     token: str = Query(default=""),
 ):
+    await websocket.accept()
+
     user_id = decode_access_token(token)
     if user_id is None:
         await websocket.close(code=1008, reason="Unauthorized")
@@ -75,27 +139,53 @@ async def session_websocket(
         await websocket.close(code=4004, reason="Session not found")
         return
 
-    await websocket.accept()
+    connected = True
 
-    async def send_json(data: dict) -> None:
-        await websocket.send_text(json.dumps(data))
+    async def send_json(data: dict) -> bool:
+        nonlocal connected
+        if not connected:
+            return False
+        try:
+            await websocket.send_text(json.dumps(data))
+            return True
+        except (WebSocketDisconnect, RuntimeError):
+            connected = False
+            return False
+
+    async def send_bytes(data: bytes) -> bool:
+        nonlocal connected
+        if not connected:
+            return False
+        try:
+            await websocket.send_bytes(data)
+            return True
+        except (WebSocketDisconnect, RuntimeError):
+            connected = False
+            return False
 
     # Generate and send opening greeting
     try:
         greeting = await get_ai_response(session, initial=True)
         session["messages"].append({"role": "assistant", "content": greeting})
-        await send_json({"type": "transcript_delta", "delta": greeting})
-        await send_json({"type": "transcript_done"})
+        if not await send_json({"type": "transcript_delta", "delta": greeting}):
+            return
+        if not await send_json({"type": "transcript_done"}):
+            return
         audio = await text_to_speech(greeting)
-        await websocket.send_bytes(audio)
+        if not await send_bytes(audio):
+            return
     except Exception as e:
-        await send_json({"type": "error", "message": f"Failed to start session: {e}"})
+        if not await send_json({"type": "error", "message": f"Failed to start session: {e}"}):
+            return
 
     # Main conversation loop
-    while True:
+    while connected:
         try:
             data = await websocket.receive()
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, RuntimeError):
+            break
+
+        if data.get("type") == "websocket.disconnect":
             break
 
         if "bytes" not in data:
@@ -106,20 +196,44 @@ async def session_websocket(
             if not transcript:
                 continue
 
-            await send_json({"type": "transcript", "role": "student", "text": transcript})
+            if not await send_json({"type": "transcript", "role": "student", "text": transcript}):
+                break
             session["messages"].append({"role": "user", "content": transcript})
 
             response_text = await get_ai_response(session)
             session["messages"].append({"role": "assistant", "content": response_text})
 
-            await send_json({"type": "transcript_delta", "delta": response_text})
-            await send_json({"type": "transcript_done"})
+            if not await send_json({"type": "transcript_delta", "delta": response_text}):
+                break
+            if not await send_json({"type": "transcript_done"}):
+                break
 
             audio = await text_to_speech(response_text)
-            await websocket.send_bytes(audio)
+            if not await send_bytes(audio):
+                break
 
+            # Send mastery_achieved to frontend AFTER the AI has spoken the announcement
+            if session.get("send_mastery_signal"):
+                session["send_mastery_signal"] = False
+                current_mastery = session.get("mastery", {})
+                if not await send_json({
+                    "type": "mastery_achieved",
+                    "topic": current_mastery.get("topic", ""),
+                    "gaps": current_mastery.get("gaps", []),
+                    "strengths": current_mastery.get("strengths", []),
+                    "hasScript": True
+                }):
+                    break
+                print(f"[recap] mastery_achieved sent to frontend after announcement")
+
+            # Background mastery check (existing)
+            asyncio.create_task(_check_mastery(websocket, session, send_json))
+
+        except (WebSocketDisconnect, RuntimeError):
+            break
         except Exception as e:
-            await send_json({"type": "error", "message": f"Processing error: {e}"})
+            if not await send_json({"type": "error", "message": f"Processing error: {e}"}):
+                break
 
 
 _NOTES_SYSTEM_PROMPT = """You are a study-notes writer. Given a Socratic tutoring conversation transcript, produce clean, well-structured study notes the student can refer back to.
@@ -174,3 +288,24 @@ async def generate_notes(
 
     markdown = response.choices[0].message.content or ""
     return NotesResponse(markdown=markdown)
+
+
+@router.get("/recap/{session_id}")
+async def get_recap_script(
+    session_id: str,
+    user_id: int = Depends(get_current_user),
+):
+    """Returns the pre-generated recap script for a session, or generates one on demand."""
+    session = _sessions.get(session_id)
+    if not session or session["user_id"] != user_id:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session.get("recap_script"):
+        return {"script": session["recap_script"], "cached": True}
+
+    from backend.services.mastery_service import build_fallback_recap_script
+    script = await prepare_recap_script(session)
+    if not script:
+        script = build_fallback_recap_script(session)
+
+    return {"script": script, "cached": False}

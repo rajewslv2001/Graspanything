@@ -20,13 +20,6 @@ const TryItSection = () => {
           />
         </div>
 
-        <div className="mb-8 border-2 border-dashed border-foreground p-8 flex flex-col items-center justify-center gap-3 cursor-pointer hover:bg-muted/30 transition-colors">
-          <div className="font-pixel text-lg text-foreground">↑</div>
-          <p className="font-body text-sm text-muted-foreground">
-            Or drop a file — PDF, slides, notes
-          </p>
-        </div>
-
         <div className="flex justify-center">
           <button onClick={handleStart} className="pixel-btn bg-foreground text-primary-foreground font-pixel text-[11px] px-10 py-4">
             Start Learning
